@@ -1,25 +1,36 @@
-# FANformer
+# FANformer: Enhancing LLMs through Effective Periodicity Modeling
 
-We provide the code and pretrained model of FANformer here.
+[![arXiv](https://img.shields.io/badge/arXiv-2502.21309-b31b1b.svg)](https://arxiv.org/abs/2502.21309)
 
-### Running the Code
+This repository contains the implementation and pre-trained models for FANformer, a novel architecture that enhances Large Language Models through effective periodicity modeling.
 
-To run the training process, use the following command:
+## Overview
+- **Revised Architecture**: Implemented in `olmo/model.py`
+- **Model Scale**: 1B parameters pre-trained model
 
+### Training
+Launch distributed training with 8 GPUs:
 ```bash
 torchrun --nproc_per_node=8 scripts/train.py configs/test/FANformer-1B-pretrain.yaml
 ```
 
-### FANformer-1B
-
-We provide the pretrained model of FANformer-1B at the following anonymous link:
-
-[Anonymous Link of FANformer-1B](https://drive.google.com/drive/folders/1RXR1azoDL06IsScfp7HanWdiV6BOTsjR?usp=sharing)
-
 ### Evaluation
-
+Run comprehensive evaluation using the OLMo benchmark:
 ```bash
-olmes --model ${model_path} --task main_suite::olmo1 --output-dir ${output_dir}
+olmes --model ${MODEL_PATH} --task main_suite::olmo1 --output-dir ${OUTPUT_DIR}
 ```
 
+### Pre-trained Models
+| Model          | Parameters | Download |
+|----------------|------------|----------|
+| FANformer-1B   | 1.1B       | [Available soon within a week](#) |
 
+
+## Citation
+```bibtex
+@article{dong2024fanformer,
+  title={FANformer: Improving Large Language Models Through Effective Periodicity Modeling},
+  author={Dong, Yihong and Li, Ge and Jiang, Xue and Tao, Yongding and Zhang, Kechi and Zhu, Hao and Liu, Huanyu and Ding, Jiazheng and Li, Jia and Deng, Jinliang and Mei, Hong},
+  journal={arXiv preprint arXiv:2502.21309},
+  year={2024}
+}
