@@ -23,7 +23,7 @@ olmes --model ${MODEL_PATH} --task main_suite::olmo1 --output-dir ${OUTPUT_DIR}
 ### Pre-trained Models
 | Model          | Parameters | Download |
 |----------------|------------|----------|
-| FANformer-1B   | 1.1B       | [Available soon within a week](#) |
+| FANformer-1B   | 1.1B       | [Available soon](#) |
 
 
 ## Citation
