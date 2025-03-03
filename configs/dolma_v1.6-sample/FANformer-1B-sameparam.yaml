@@ -1,0 +1,202 @@
+run_name: FANformer-1B-sameparam
+seed: 6198
+dry_run: false
+
+wandb:
+  name: ${run_name}
+  project: FANformer-1B
+
+model:
+  d_model: 2048
+  n_heads: 16
+  n_layers: 16
+  mlp_hidden_size: 15360
+  weight_tying: true
+  alibi: false
+  rope: true
+  flash_attention: true 
+  attention_dropout: 0.0
+  attention_layer_norm: false
+  multi_query_attention: false
+  include_bias: false
+  block_type: sequential
+  layer_norm_type: rms
+  layer_norm_with_affine: true
+  layer_norm_eps: 1e-6
+  bias_for_layer_norm: false
+  attention_layer_norm_with_affine: false
+  activation_type: swiglu
+  residual_dropout: 0.0
+  embedding_dropout: 0.0
+  max_sequence_length: 2048
+  vocab_size: 50280
+  embedding_size: 50304
+  eos_token_id: 50279
+  pad_token_id: 1
+  init_device: cuda
+  init_fn: mitchell
+  use_ATF: true
+
+distributed_strategy: ddp
+ddp:
+  grad_sync_mode: batch
+  find_unused_params: false
+
+compile: null
+
+optimizer:
+  name: adamw
+  learning_rate: 4.0e-4
+  weight_decay: 0.1
+  betas:
+  - 0.9
+  - 0.95
+  metrics_log_interval: 10
+
+scheduler:
+  name: cosine_with_warmup
+  t_warmup: 200
+  alpha_f: 0.1
+  warmup_min_lr: 0
+
+tokenizer:
+  identifier: tokenizers/allenai_gpt-neox-olmo-dolma-v1_5.json
+  truncate_direction: right
+
+# save_folder: ${path.choose:${oc.env:SCRATCH_DIR,no_exist}/checkpoints,/results}/${oc.env:SLURM_JOB_ID,${run_name}}
+save_folder: ./checkpoints/olmo-1B/${run_name}
+save_overwrite: false
+# Unsharded checkpoints (for final storage)
+save_interval_unsharded: 10000
+save_num_unsharded_checkpoints_to_keep: -1
+
+load_path: null
+
+max_duration: 1ep
+global_train_batch_size: 1024
+device_train_microbatch_size: 2
+
+precision: amp_bf16
+
+gen1_gc_interval: 1
+
+max_grad_norm: 1.0
+max_grad_norm_ratio: null
+
+speed_monitor:
+  window_size: 20
+
+eval_interval: 10000
+eval_subset_num_batches: -1
+device_eval_batch_size: ${device_train_microbatch_size}
+evaluators:
+  # lump all the small datasets together (we still get separate metrics).
+  - label: v3-small-ppl-validation
+    data:
+      num_workers: 0
+      drop_last: true
+      datasets:
+        v3-small-c4_en-validation:
+          - ./validation/v3/c4_en/part-0-00000.npy
+        v3-small-dolma_books-validation:
+          - ./validation/v3/dolma_books/part-0-00000.npy
+        v3-small-dolma_common-crawl-validation:
+          - ./validation/v3/dolma_common-crawl/part-0-00000.npy
+        v3-small-dolma_pes2o-validation:
+          - ./validation/v3/dolma_pes2o/part-0-00000.npy
+        v3-small-dolma_reddit-validation:
+          - ./validation/v3/dolma_reddit/part-0-00000.npy
+        v3-small-dolma_stack-validation:
+          - ./validation/v3/dolma_stack/part-0-00000.npy
+        v3-small-dolma_wiki-validation:
+          - ./validation/v3/dolma_wiki/part-0-00000.npy
+        v3-small-ice-validation:
+          - ./validation/v3/ice/part-0-00000.npy
+        v3-small-m2d2_s2orc-validation:
+          - ./validation/v3/m2d2_s2orc/part-0-00000.npy
+        v3-small-pile-validation:
+          - ./validation/v3/pile/part-0-00000.npy
+        v3-small-wikitext_103-validation:
+          - ./validation/v3/wikitext_103/part-0-00000.npy
+
+  - label: v2-small-ppl-validation
+    data:
+      num_workers: 0
+      drop_last: true
+      datasets:
+        v2-small-4chan-validation:
+          - ./validation/v2/4chan/val.npy
+        v2-small-c4_100_domains-validation:
+          - ./validation/v2/c4_100_domains/val.npy
+        v2-small-c4_en-validation:
+          - ./validation/v2/c4_en/val.npy
+        v2-small-gab-validation:
+          - ./validation/v2/gab/val.npy
+        v2-small-ice-validation:
+          - ./validation/v2/ice/val.npy
+        v2-small-m2d2_s2orc-validation:
+          - ./validation/v2/m2d2_s2orc/val.npy
+        v2-small-m2d2_wiki-validation:
+          - ./validation/v2/m2d2_wiki/val.npy
+        v2-small-manosphere-validation:
+          - ./validation/v2/manosphere/val.npy
+        v2-small-mc4_en-validation:
+          - ./validation/v2/mc4_en/val.npy
+        v2-small-pile-validation:
+          - ./validation/v2/pile/val.npy
+        v2-small-ptb-validation:
+          - ./validation/v2/ptb/val.npy
+        v2-small-twitterAEE-validation:
+          - ./validation/v2/twitterAEE/val.npy
+        v2-small-wikitext_103-validation:
+          - ./validation/v2/wikitext_103/val.npy
+
+  - label: piqa
+    type: downstream
+
+  - label: hellaswag
+    type: downstream
+
+  - label: winogrande
+    type: downstream
+
+  - label: openbook_qa
+    type: downstream
+
+  - label: boolq  # requires implemention of the pmi_dc matrix
+    type: downstream
+
+  - label: sciq
+    type: downstream
+
+  - label: arc_easy
+    type: downstream
+
+  - label: arc_challenge  # requires implemention of the pmi_dc matrix
+    type: downstream
+
+  - label: copa
+    type: downstream
+
+  - label: rte
+    type: downstream
+
+  - label: commitment_bank
+    type: downstream
+
+  - label: mrpc
+    type: downstream
+
+  - label: sst2
+    type: downstream
+
+data:
+  pad_direction: right
+  num_workers: 64
+  drop_last: true
+  pin_memory: true
+  prefetch_factor: 8
+  persistent_workers: true
+  timeout: 0
+  paths: ${path.glob:/data4/tokenized_data/*.npy}
+
