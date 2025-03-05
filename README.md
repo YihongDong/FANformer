@@ -23,7 +23,7 @@ olmes --model ${MODEL_PATH} --task main_suite::olmo1 --output-dir ${OUTPUT_DIR}
 ### Pre-trained Models
 | Model          | Parameters | Download |
 |----------------|------------|----------|
-| FANformer-1B   | 1.1B       | [Available soon](#) |
+| FANformer-1B   | 1.1B       | [Google Drive](https://drive.google.com/drive/folders/1lwxxPskEwp5tA2CImITOhiaugGFEVJAs?usp=drive_link) |
 
 
 ## Citation
