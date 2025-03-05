@@ -83,12 +83,12 @@ class FANLayer(nn.Module):
         output_dim (int): The number of output features.
         p_ratio (float): The ratio of output dimensions used for cosine and sine parts (default: 0.25).
         activation (str or callable): The activation function to apply to the g component. If a string is passed,
-            the corresponding activation from torch.nn.functional is used (default: 'gelu').
+            the corresponding activation from torch.nn.functional is used (default: 'gelu', we set to None in FANformer).
         use_p_bias (bool): If True, include bias in the linear transformations of p component (default: True). 
             There is almost no difference between bias and non-bias in our experiments.
     """
     
-    def __init__(self, input_dim, output_dim, p_ratio=0.25, activation='gelu', use_p_bias=True):
+    def __init__(self, input_dim, output_dim, p_ratio=0.25, activation=None, use_p_bias=True):
         super(FANLayer, self).__init__()
         
         # Ensure the p_ratio is within a valid range
