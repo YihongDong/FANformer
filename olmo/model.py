@@ -127,7 +127,7 @@ class FANLayer(nn.Module):
         return output
     
 class FAN(nn.Module):
-    def __init__(self, input_dim, output_dim, config, activation='gelu'):
+    def __init__(self, input_dim, output_dim, config, activation):
         super(FAN, self).__init__()
         
         self.fanlayer = FANLayer(input_dim, input_dim, config.p_ratio, activation)
@@ -924,9 +924,9 @@ class OLMoLlamaBlock(OLMoBlock):
             v_proj_out_dim = config.d_model
             
         if self.use_ATF:
-            self.q_proj = FAN(config.d_model, q_proj_out_dim, config)
-            self.k_proj = FAN(config.d_model, k_proj_out_dim, config)
-            self.v_proj = FAN(config.d_model, v_proj_out_dim, config)
+            self.q_proj = FAN(config.d_model, q_proj_out_dim, config, activation=config.attention_activation)
+            self.k_proj = FAN(config.d_model, k_proj_out_dim, config, activation=config.attention_activation)
+            self.v_proj = FAN(config.d_model, v_proj_out_dim, config, activation=config.attention_activation)
         else:
             self.q_proj = nn.Linear(
                 config.d_model, q_proj_out_dim, bias=config.include_bias, device=config.init_device
