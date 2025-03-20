@@ -32,5 +32,13 @@ olmes --model ${MODEL_PATH} --task main_suite::olmo1 --output-dir ${OUTPUT_DIR}
   title={FANformer: Improving Large Language Models Through Effective Periodicity Modeling},
   author={Dong, Yihong and Li, Ge and Jiang, Xue and Tao, Yongding and Zhang, Kechi and Zhu, Hao and Liu, Huanyu and Ding, Jiazheng and Li, Jia and Deng, Jinliang and Mei, Hong},
   journal={arXiv preprint arXiv:2502.21309},
+  year={2025}
+}
+
+@article{dong2024fan,
+  title={FAN: Fourier Analysis Networks},
+  author={Yihong Dong and Ge Li and Yongding Tao and Xue Jiang and Kechi Zhang and Jia Li and Jing Su and Jun Zhang and Jingjing Xu},
+  journal={arXiv preprint arXiv:2410.02675},
   year={2024}
 }
+```
