@@ -21,9 +21,10 @@ olmes --model ${MODEL_PATH} --task main_suite::olmo1 --output-dir ${OUTPUT_DIR}
 ```
 
 ### Pre-trained Models
-| Model          | Parameters | Training Tokens | Download |
-|----------------|------------|-----------------|----------|
-| FANformer-1B   | 1.1B       | 1T |[Google Drive](https://drive.google.com/drive/folders/1lwxxPskEwp5tA2CImITOhiaugGFEVJAs?usp=drive_link) |
+| Model          | Non-embedding Parameters | Training Tokens | Download |
+|----------------|:------------:|:-----------------:|----------|
+| FANformer-1B   | 1.1B       | 1T | [Huggingface](https://huggingface.co/dongyh/FANformer-1B) or [Google Drive](https://drive.google.com/drive/folders/1lwxxPskEwp5tA2CImITOhiaugGFEVJAs?usp=drive_link) |
+
 
 
 ## Citation
