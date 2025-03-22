@@ -20,6 +20,7 @@ Run comprehensive evaluation using the OLMo benchmark:
 olmes --model ${MODEL_PATH} --task main_suite::olmo1 --output-dir ${OUTPUT_DIR}
 ```
 
+
 ### Pre-trained Models
 | Model          | Non-embedding Parameters | Training Tokens | Download |
 |----------------|:------------:|:-----------------:|----------|
@@ -29,7 +30,7 @@ olmes --model ${MODEL_PATH} --task main_suite::olmo1 --output-dir ${OUTPUT_DIR}
 
 ## Citation
 ```bibtex
-@article{dong2024fanformer,
+@article{dong2025fanformer,
   title={FANformer: Improving Large Language Models Through Effective Periodicity Modeling},
   author={Dong, Yihong and Li, Ge and Jiang, Xue and Tao, Yongding and Zhang, Kechi and Zhu, Hao and Liu, Huanyu and Ding, Jiazheng and Li, Jia and Deng, Jinliang and Mei, Hong},
   journal={arXiv preprint arXiv:2502.21309},
