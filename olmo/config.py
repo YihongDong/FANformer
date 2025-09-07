@@ -481,6 +481,22 @@ class ModelConfig(BaseConfig):
     
     attention_activation: Optional[str] = None
 
+    # Stack memory configuration parameters
+    use_stack_memory: bool = False
+    """Whether to enable stack memory mechanism."""
+
+    num_mem_heads: int = 4  
+    """Number of memory attention heads for stack operations."""
+
+    stack_slots: int = 16
+    """Number of slots in the memory stack."""
+
+    memory_cache_size: int = 2048
+    """Size of the memory cache for efficient operations."""
+
+    stack_memory_dim: Optional[int] = None
+    """Dimension of stack memory. If None, uses d_model // num_mem_heads."""
+
     @property
     def effective_n_kv_heads(self) -> int:
         if self.n_kv_heads is None:

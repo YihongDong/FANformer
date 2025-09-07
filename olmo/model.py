@@ -47,6 +47,7 @@ from .config import (
 )
 from .exceptions import OLMoConfigurationError
 from .initialization import init_normal
+from .stack_memory import StackMemory
 from .torch_util import ensure_finite_, get_cumulative_document_lengths
 
 if sys.version_info.minor > 8:
@@ -773,10 +774,21 @@ class OLMoSequentialBlock(OLMoBlock):
         self.attn_norm = LayerNorm.build(config, size=config.d_model)
         self.ff_norm = LayerNorm.build(config, size=config.d_model)
 
+        # Stack memory initialization
+        if config.use_stack_memory:
+            self.stack_memory = StackMemory(config)
+        else:
+            self.stack_memory = None
+
     def reset_parameters(self):
         super().reset_parameters()
         self.attn_norm.reset_parameters()
         self.ff_norm.reset_parameters()
+        
+        # Reset stack memory parameters
+        if self.stack_memory is not None:
+            self.stack_memory.reset_parameters()
+            
         # NOTE: the standard deviation for these weights does not depend on the layer.
 
         if self.config.init_fn == InitFnType.normal:
@@ -807,7 +819,9 @@ class OLMoSequentialBlock(OLMoBlock):
         use_cache: bool = False,
         max_doc_len: Optional[int] = None,
         cu_doc_lens: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        memory_stack: Optional[torch.Tensor] = None,
+        memory_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor], Optional[torch.Tensor]]:
         # Get query, key, value projections.
         # shape:
         #  - for regular attn q, k, v: (batch_size, seq_len, d_model)
@@ -867,6 +881,10 @@ class OLMoSequentialBlock(OLMoBlock):
         # shape: (B, T, C)
         x = x + self.dropout(att)
 
+        # Apply stack memory operations if enabled
+        if self.stack_memory is not None and memory_stack is not None and memory_mask is not None:
+            x, memory_stack, memory_mask = self.stack_memory(x, memory_stack, memory_mask)
+
         # Add feed-forward projection.
         # shape: (batch_size, seq_len, d_model)
         og_x = x
@@ -894,7 +912,7 @@ class OLMoSequentialBlock(OLMoBlock):
         x = self.dropout(x)
         x = og_x + x
 
-        return x, cache
+        return x, cache, memory_stack, memory_mask
 
 
 class OLMoLlamaBlock(OLMoBlock):
@@ -943,10 +961,21 @@ class OLMoLlamaBlock(OLMoBlock):
             config.d_model, self.hidden_size, bias=config.include_bias, device=config.init_device
         )
 
+        # Stack memory initialization
+        if config.use_stack_memory:
+            self.stack_memory = StackMemory(config)
+        else:
+            self.stack_memory = None
+
     def reset_parameters(self):
         super().reset_parameters()
         self.attn_norm.reset_parameters()
         self.ff_norm.reset_parameters()
+        
+        # Reset stack memory parameters
+        if self.stack_memory is not None:
+            self.stack_memory.reset_parameters()
+            
         # NOTE: the standard deviation for these weights does not depend on the layer.
 
         if self.config.init_fn == InitFnType.normal:
@@ -1007,7 +1036,9 @@ class OLMoLlamaBlock(OLMoBlock):
         use_cache: bool = False,
         max_doc_len: Optional[int] = None,
         cu_doc_lens: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        memory_stack: Optional[torch.Tensor] = None,
+        memory_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]], Optional[torch.Tensor], Optional[torch.Tensor]]:
         # Get query, key, value projections.
         # shape:
         #  - for regular attn q, k, v: (batch_size, seq_len, d_model)
@@ -1039,6 +1070,10 @@ class OLMoLlamaBlock(OLMoBlock):
         # shape: (B, T, C)
         x = x + self.dropout(att)
 
+        # Apply stack memory operations if enabled
+        if self.stack_memory is not None and memory_stack is not None and memory_mask is not None:
+            x, memory_stack, memory_mask = self.stack_memory(x, memory_stack, memory_mask)
+
         # Add feed-forward projection.
         # shape: (batch_size, seq_len, d_model)
         og_x = x
@@ -1055,7 +1090,7 @@ class OLMoLlamaBlock(OLMoBlock):
         x = self.dropout(x)
         x = og_x + x
 
-        return x, cache
+        return x, cache, memory_stack, memory_mask
 
 
 class OLMoOutput(NamedTuple):
@@ -1073,6 +1108,16 @@ class OLMoOutput(NamedTuple):
     hidden_states: Optional[Tuple[torch.Tensor, ...]]
     """
     Hidden states from each block.
+    """
+
+    memory_stack: Optional[torch.Tensor] = None
+    """
+    Final memory stack state if stack memory is enabled.
+    """
+
+    memory_mask: Optional[torch.Tensor] = None
+    """
+    Final memory mask state if stack memory is enabled.
     """
 
 
@@ -1224,6 +1269,11 @@ class OLMo(nn.Module):
         # When `init_device="meta"` FSDP will call `reset_parameters()` to initialize weights.
         if init_params and self.config.init_device != "meta":
             self.reset_parameters()
+        
+        # Initialize stack memory buffers if enabled
+        if self.config.use_stack_memory:
+            self._init_stack_memory_buffers()
+            
         self.__num_fwd_flops: Optional[int] = None
         self.__num_bck_flops: Optional[int] = None
 
@@ -1231,6 +1281,21 @@ class OLMo(nn.Module):
         if self.config.alibi:
             get_causal_attention_bias(self.__cache, config.max_sequence_length, _non_meta_init_device(config))
             self.get_alibi_attention_bias(config.max_sequence_length, _non_meta_init_device(config))
+
+    def _init_stack_memory_buffers(self):
+        """Initialize stack memory buffers for the model."""
+        # Use reasonable defaults for memory dimensions
+        batch_size = getattr(self.config, 'default_batch_size', 1)
+        seq_len = self.config.max_sequence_length
+        memory_dim = self.config.stack_memory_dim or (self.config.d_model // self.config.num_mem_heads)
+        
+        memory_shape = (batch_size, seq_len, self.config.num_mem_heads, 
+                       self.config.stack_slots, memory_dim)
+        mask_shape = (batch_size, seq_len, self.config.num_mem_heads, self.config.stack_slots)
+        
+        # Register as non-persistent buffers (won't be saved in checkpoints by default)
+        self.register_buffer("default_memory_stack", torch.zeros(*memory_shape, device=self.device), persistent=False)
+        self.register_buffer("default_memory_mask", torch.zeros(*mask_shape, device=self.device), persistent=False)
 
     def set_activation_checkpointing(
         self, strategy: Optional[ActivationCheckpointingStrategy], checkpoint_func: Optional[Callable] = None
@@ -1343,6 +1408,8 @@ class OLMo(nn.Module):
         output_hidden_states: Optional[bool] = None,
         doc_lens: Optional[torch.Tensor] = None,
         max_doc_lens: Optional[Sequence[int]] = None,
+        memory_stack: Optional[torch.Tensor] = None,
+        memory_mask: Optional[torch.Tensor] = None,
     ) -> OLMoOutput:
         """
         :param input_ids: A tensor of shape `(batch_size, seq_len)`.
@@ -1414,6 +1481,13 @@ class OLMo(nn.Module):
         # shape: (batch_size, seq_len, d_model)
         x = self.transformer.emb_drop(x)  # type: ignore
 
+        # Initialize memory if stack memory is enabled and not provided
+        if self.config.use_stack_memory:
+            if memory_stack is None:
+                memory_stack = self.default_memory_stack[:batch_size].clone()
+            if memory_mask is None:
+                memory_mask = self.default_memory_mask[:batch_size].clone()
+
         # Transform the attention mask into what the blocks expect.
         if attention_mask is not None:
             # shape: (batch_size, 1, 1, seq_len)
@@ -1471,7 +1545,7 @@ class OLMo(nn.Module):
                 layer_past = None if past_key_values is None else past_key_values[block_idx]
                 if should_checkpoint_block(self.activation_checkpointing_strategy, block_idx):
                     # shape: (batch_size, seq_len, d_model)
-                    x, cache = self._activation_checkpoint_fn(
+                    x, cache, memory_stack, memory_mask = self._activation_checkpoint_fn(
                         block,
                         x,
                         attention_bias=attention_bias,
@@ -1479,16 +1553,20 @@ class OLMo(nn.Module):
                         use_cache=use_cache,
                         max_doc_len=max_doc_len,
                         cu_doc_lens=cu_doc_lens,
+                        memory_stack=memory_stack,
+                        memory_mask=memory_mask,
                     )
                 else:
                     # shape: (batch_size, seq_len, d_model)
-                    x, cache = block(
+                    x, cache, memory_stack, memory_mask = block(
                         x,
                         attention_bias=attention_bias,
                         layer_past=layer_past,
                         use_cache=use_cache,
                         max_doc_len=max_doc_len,
                         cu_doc_lens=cu_doc_lens,
+                        memory_stack=memory_stack,
+                        memory_mask=memory_mask,
                     )
 
                 if attn_key_values is not None:
@@ -1543,7 +1621,36 @@ class OLMo(nn.Module):
             logits=logits,
             attn_key_values=attn_key_values,
             hidden_states=tuple(all_hidden_states) if output_hidden_states else None,
+            memory_stack=memory_stack if self.config.use_stack_memory else None,
+            memory_mask=memory_mask if self.config.use_stack_memory else None,
         )
+
+    def save_memory_state(self, path: PathOrStr):
+        """Save current memory state to file."""
+        if self.config.use_stack_memory:
+            torch.save({
+                'memory_stack': self.default_memory_stack,
+                'memory_mask': self.default_memory_mask,
+            }, path)
+        else:
+            raise ValueError("Stack memory is not enabled. Cannot save memory state.")
+
+    def load_memory_state(self, path: PathOrStr):
+        """Load memory state from file."""
+        if self.config.use_stack_memory:
+            state = torch.load(path, map_location=self.device)
+            self.default_memory_stack.copy_(state['memory_stack'])
+            self.default_memory_mask.copy_(state['memory_mask'])
+        else:
+            raise ValueError("Stack memory is not enabled. Cannot load memory state.")
+
+    def reset_memory_state(self):
+        """Reset memory state to zeros."""
+        if self.config.use_stack_memory:
+            self.default_memory_stack.zero_()
+            self.default_memory_mask.zero_()
+        else:
+            raise ValueError("Stack memory is not enabled. Cannot reset memory state.")
 
     def get_fsdp_wrap_policy(self, wrap_strategy: Optional[FSDPWrapStrategy] = None):
         if wrap_strategy is None:
