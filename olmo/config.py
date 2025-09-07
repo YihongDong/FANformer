@@ -497,6 +497,23 @@ class ModelConfig(BaseConfig):
     stack_memory_dim: Optional[int] = None
     """Dimension of stack memory. If None, uses d_model // num_mem_heads."""
 
+    stack_dim: Optional[int] = None
+    """Compressed dimension for stack memory. If None, uses head_dim (no compression)."""
+
+    @property
+    def effective_stack_memory_dim(self) -> int:
+        """Get the effective stack memory dimension."""
+        if self.stack_memory_dim is not None:
+            return self.stack_memory_dim
+        return self.d_model // self.num_mem_heads
+
+    @property
+    def effective_stack_dim(self) -> int:
+        """Get the effective stack compression dimension."""
+        if self.stack_dim is not None:
+            return self.stack_dim
+        return self.effective_stack_memory_dim  # No compression by default
+
     @property
     def effective_n_kv_heads(self) -> int:
         if self.n_kv_heads is None:

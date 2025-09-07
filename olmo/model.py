@@ -543,11 +543,21 @@ class OLMoBlock(nn.Module):
             except ModuleNotFoundError:
                 pass
 
+        # Stack memory initialization (moved from subclasses to eliminate duplication)
+        if config.use_stack_memory:
+            self.stack_memory = StackMemory(config)
+        else:
+            self.stack_memory = None
+
     def reset_parameters(self):
         if self.k_norm is not None:
             self.k_norm.reset_parameters()
         if self.q_norm is not None:
             self.q_norm.reset_parameters()
+
+        # Reset stack memory parameters (moved from subclasses)
+        if self.stack_memory is not None:
+            self.stack_memory.reset_parameters()
 
         if self.config.init_fn == InitFnType.normal:
             attn_out_std = ff_out_std = self.config.init_std
@@ -567,6 +577,17 @@ class OLMoBlock(nn.Module):
 
         init_normal(self.attn_out, std=attn_out_std, init_cutoff_factor=cutoff_factor)
         init_normal(self.ff_out, std=ff_out_std, init_cutoff_factor=cutoff_factor)
+
+    def _apply_stack_memory(
+        self, 
+        x: torch.Tensor, 
+        memory_stack: Optional[torch.Tensor], 
+        memory_mask: Optional[torch.Tensor]
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        """Apply stack memory operations if enabled."""
+        if self.stack_memory is not None and memory_stack is not None and memory_mask is not None:
+            return self.stack_memory(x, memory_stack, memory_mask)
+        return x, memory_stack, memory_mask
 
     def set_activation_checkpointing(
         self, strategy: Optional[ActivationCheckpointingStrategy], checkpoint_func: Optional[Callable] = None
@@ -774,21 +795,11 @@ class OLMoSequentialBlock(OLMoBlock):
         self.attn_norm = LayerNorm.build(config, size=config.d_model)
         self.ff_norm = LayerNorm.build(config, size=config.d_model)
 
-        # Stack memory initialization
-        if config.use_stack_memory:
-            self.stack_memory = StackMemory(config)
-        else:
-            self.stack_memory = None
-
     def reset_parameters(self):
         super().reset_parameters()
         self.attn_norm.reset_parameters()
         self.ff_norm.reset_parameters()
         
-        # Reset stack memory parameters
-        if self.stack_memory is not None:
-            self.stack_memory.reset_parameters()
-            
         # NOTE: the standard deviation for these weights does not depend on the layer.
 
         if self.config.init_fn == InitFnType.normal:
@@ -882,8 +893,7 @@ class OLMoSequentialBlock(OLMoBlock):
         x = x + self.dropout(att)
 
         # Apply stack memory operations if enabled
-        if self.stack_memory is not None and memory_stack is not None and memory_mask is not None:
-            x, memory_stack, memory_mask = self.stack_memory(x, memory_stack, memory_mask)
+        x, memory_stack, memory_mask = self._apply_stack_memory(x, memory_stack, memory_mask)
 
         # Add feed-forward projection.
         # shape: (batch_size, seq_len, d_model)
@@ -961,21 +971,11 @@ class OLMoLlamaBlock(OLMoBlock):
             config.d_model, self.hidden_size, bias=config.include_bias, device=config.init_device
         )
 
-        # Stack memory initialization
-        if config.use_stack_memory:
-            self.stack_memory = StackMemory(config)
-        else:
-            self.stack_memory = None
-
     def reset_parameters(self):
         super().reset_parameters()
         self.attn_norm.reset_parameters()
         self.ff_norm.reset_parameters()
         
-        # Reset stack memory parameters
-        if self.stack_memory is not None:
-            self.stack_memory.reset_parameters()
-            
         # NOTE: the standard deviation for these weights does not depend on the layer.
 
         if self.config.init_fn == InitFnType.normal:
@@ -1071,8 +1071,7 @@ class OLMoLlamaBlock(OLMoBlock):
         x = x + self.dropout(att)
 
         # Apply stack memory operations if enabled
-        if self.stack_memory is not None and memory_stack is not None and memory_mask is not None:
-            x, memory_stack, memory_mask = self.stack_memory(x, memory_stack, memory_mask)
+        x, memory_stack, memory_mask = self._apply_stack_memory(x, memory_stack, memory_mask)
 
         # Add feed-forward projection.
         # shape: (batch_size, seq_len, d_model)
@@ -1284,10 +1283,11 @@ class OLMo(nn.Module):
 
     def _init_stack_memory_buffers(self):
         """Initialize stack memory buffers for the model."""
-        # Use reasonable defaults for memory dimensions
-        batch_size = getattr(self.config, 'default_batch_size', 1)
+        # Always use batch_size=1 and rely on expand() for dynamic batch sizes
+        # This is more memory efficient than pre-allocating large buffers
+        batch_size = 1
         seq_len = self.config.max_sequence_length
-        memory_dim = self.config.stack_memory_dim or (self.config.d_model // self.config.num_mem_heads)
+        memory_dim = self.config.effective_stack_dim  # Use compressed dimension for efficiency
         
         memory_shape = (batch_size, seq_len, self.config.num_mem_heads, 
                        self.config.stack_slots, memory_dim)
@@ -1484,9 +1484,9 @@ class OLMo(nn.Module):
         # Initialize memory if stack memory is enabled and not provided
         if self.config.use_stack_memory:
             if memory_stack is None:
-                memory_stack = self.default_memory_stack[:batch_size].clone()
+                memory_stack = self.default_memory_stack.expand(batch_size, -1, -1, -1, -1).clone()
             if memory_mask is None:
-                memory_mask = self.default_memory_mask[:batch_size].clone()
+                memory_mask = self.default_memory_mask.expand(batch_size, -1, -1, -1).clone()
 
         # Transform the attention mask into what the blocks expect.
         if attention_mask is not None:

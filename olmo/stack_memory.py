@@ -34,11 +34,12 @@ class StackMemory(nn.Module):
         self.num_mem_heads = config.num_mem_heads
         self.stack_slots = config.stack_slots
         
-        # Calculate memory dimension
-        if config.stack_memory_dim is not None:
-            self.head_dim = config.stack_memory_dim
-        else:
-            self.head_dim = config.d_model // self.num_mem_heads
+        # Calculate memory dimension using centralized property
+        self.head_dim = config.effective_stack_memory_dim
+        self.stack_dim = config.effective_stack_dim
+        
+        # Check if compression is enabled
+        self.use_compression = (self.stack_dim != self.head_dim)
         
         # Action prediction head: outputs logits for push/pop/noop for each memory head
         self.action_head = nn.Linear(
@@ -48,24 +49,42 @@ class StackMemory(nn.Module):
             device=config.init_device
         )
         
-        # Gate projection for attention over stack slots
+        # Gate projection for attention over stack slots (works with compressed dimension)
         self.gate_proj = nn.Linear(
-            self.head_dim, 
+            self.stack_dim,  # Changed from self.head_dim to work with compressed stack
             1,
             bias=config.include_bias,
             device=config.init_device
         )
+        
+        # Compression layers (if compression is enabled)
+        if self.use_compression:
+            self.down_proj = nn.Linear(
+                self.head_dim, 
+                self.stack_dim,
+                bias=config.include_bias,
+                device=config.init_device
+            )
+            self.up_proj = nn.Linear(
+                self.stack_dim,
+                self.head_dim, 
+                bias=config.include_bias,
+                device=config.init_device
+            )
+        else:
+            self.down_proj = None
+            self.up_proj = None
         
         # Residual connection weight
         self.res_weight = nn.Parameter(
             torch.ones(1, device=config.init_device)
         )
         
-        # Cache configuration
+        # Cache configuration (cache compressed values for efficiency)
         self.cache_size = config.memory_cache_size
         self.register_buffer(
             "k_cache", 
-            torch.zeros(self.cache_size, self.num_mem_heads, self.head_dim),
+            torch.zeros(self.cache_size, self.num_mem_heads, self.stack_dim),  # Use compressed dimension
             persistent=False
         )
         self.register_buffer(
@@ -87,6 +106,17 @@ class StackMemory(nn.Module):
         nn.init.normal_(self.gate_proj.weight, std=0.02)
         if self.gate_proj.bias is not None:
             nn.init.zeros_(self.gate_proj.bias)
+            
+        # Initialize compression layers if present
+        if self.down_proj is not None:
+            nn.init.normal_(self.down_proj.weight, std=0.02)
+            if self.down_proj.bias is not None:
+                nn.init.zeros_(self.down_proj.bias)
+        
+        if self.up_proj is not None:
+            nn.init.normal_(self.up_proj.weight, std=0.02)
+            if self.up_proj.bias is not None:
+                nn.init.zeros_(self.up_proj.bias)
             
         # Initialize residual weight
         nn.init.ones_(self.res_weight)
@@ -176,6 +206,10 @@ class StackMemory(nn.Module):
         # Prepare key values for potential pushing
         k_values = hidden_states.view(batch_size, seq_len, self.num_mem_heads, self.head_dim)
         
+        # Apply compression if enabled
+        if self.use_compression:
+            k_values = self.down_proj(k_values)  # Compress from head_dim to stack_dim
+        
         # Update stack with vectorized operations
         new_stack, new_mask = self._vectorized_update(memory_stack, memory_mask, actions, k_values)
         
@@ -188,6 +222,11 @@ class StackMemory(nn.Module):
         
         # Aggregate memory output
         memory_output = (new_stack * gate_weights.unsqueeze(-1)).sum(dim=3)
+        
+        # Apply decompression if enabled
+        if self.use_compression:
+            memory_output = self.up_proj(memory_output)  # Decompress from stack_dim to head_dim
+            
         memory_output = memory_output.view(batch_size, seq_len, -1)
         
         # Residual connection
@@ -224,45 +263,93 @@ class StackMemory(nn.Module):
             memory_mask: Current stack mask [batch, num_heads, stack_slots]
             
         Returns:
-            output: Enhanced hidden state
-            new_stack: Updated stack state  
-            new_mask: Updated mask state
+            output: Enhanced hidden state [batch, d_model]
+            new_stack: Updated stack state [batch, num_heads, stack_slots, head_dim]
+            new_mask: Updated mask state [batch, num_heads, stack_slots]
         """
         if not self.enable_cache:
-            return self.forward(hidden_state.unsqueeze(1), memory_stack, memory_mask)
+            # Add seq_len=1 dimension for forward method compatibility
+            output, new_stack, new_mask = self.forward(
+                hidden_state.unsqueeze(1),      # [batch, 1, d_model]
+                memory_stack.unsqueeze(1),      # [batch, 1, num_heads, stack_slots, head_dim]
+                memory_mask.unsqueeze(1)        # [batch, 1, num_heads, stack_slots]
+            )
+            # Remove seq_len=1 dimension from outputs
+            return (
+                output.squeeze(1),              # [batch, d_model]
+                new_stack.squeeze(1),           # [batch, num_heads, stack_slots, head_dim]
+                new_mask.squeeze(1)             # [batch, num_heads, stack_slots]
+            )
             
+        # Get batch size and reshape hidden_state for head-wise processing
+        batch_size = hidden_state.shape[0]
+        
+        # Predict actions for the current step
+        action_logits = self.action_head(hidden_state) / math.sqrt(self.head_dim)
+        current_actions = F.softmax(
+            action_logits.view(batch_size, self.num_mem_heads, 3), 
+            dim=-1
+        )  # [batch, num_heads, 3]
+        
+        # Prepare key values for potential pushing
+        current_k_values = hidden_state.view(batch_size, self.num_mem_heads, self.head_dim)
+        
+        # Apply compression if enabled
+        if self.use_compression:
+            current_k_values = self.down_proj(current_k_values)  # Compress from head_dim to stack_dim
+        
         # Use cached values if available
         if self.cache_position > 0:
-            cached_k = self.k_cache[:self.cache_position]
-            cached_actions = self.action_cache[:self.cache_position]
+            cached_k = self.k_cache[:self.cache_position]           # [cache_pos, num_heads, stack_dim]
+            cached_actions = self.action_cache[:self.cache_position] # [cache_pos, num_heads, 3]
             
-            k_values = torch.cat([cached_k.unsqueeze(0), hidden_state], dim=1)
+            # Concatenate cached and current values with proper dimensions
+            k_values = torch.cat([
+                cached_k.unsqueeze(0).expand(batch_size, -1, -1, -1),  # [batch, cache_pos, num_heads, stack_dim]
+                current_k_values.unsqueeze(1)                          # [batch, 1, num_heads, stack_dim]
+            ], dim=1)  # [batch, cache_pos+1, num_heads, stack_dim]
+            
             actions = torch.cat([
-                cached_actions.unsqueeze(0), 
-                self.action_head(hidden_state).softmax(dim=-1)
-            ], dim=1)
+                cached_actions.unsqueeze(0).expand(batch_size, -1, -1, -1),  # [batch, cache_pos, num_heads, 3]
+                current_actions.unsqueeze(1)                                 # [batch, 1, num_heads, 3]
+            ], dim=1)  # [batch, cache_pos+1, num_heads, 3]
         else:
-            k_values = hidden_state
-            actions = self.action_head(hidden_state).softmax(dim=-1)
+            k_values = current_k_values.unsqueeze(1)    # [batch, 1, num_heads, stack_dim]
+            actions = current_actions.unsqueeze(1)      # [batch, 1, num_heads, 3]
         
-        # Update stack
+        # Update stack with vectorized operations
+        # Add seq_len dimension to memory tensors for _vectorized_update
         new_stack, new_mask = self._vectorized_update(
-            memory_stack.unsqueeze(1), 
-            memory_mask.unsqueeze(1), 
-            actions.unsqueeze(0), 
-            k_values.unsqueeze(0)
+            memory_stack.unsqueeze(1),      # [batch, 1, num_heads, stack_slots, stack_dim]
+            memory_mask.unsqueeze(1),       # [batch, 1, num_heads, stack_slots]
+            actions[:, -1:],                # [batch, 1, num_heads, 3] - only last timestep
+            k_values[:, -1:]                # [batch, 1, num_heads, stack_dim] - only last timestep
         )
         
-        # Compute output
-        gate_scores = self.gate_proj(new_stack).squeeze(-1)
-        gate_weights = F.softmax(gate_scores + (1 - new_mask) * -1e9, dim=-1)
-        memory_output = (new_stack * gate_weights.unsqueeze(-1)).sum(dim=3)
+        # Compute attention over stack slots
+        gate_scores = self.gate_proj(new_stack).squeeze(-1)  # [batch, 1, num_heads, stack_slots]
+        gate_weights = F.softmax(
+            gate_scores + (1 - new_mask) * -1e9,  # Mask out empty slots
+            dim=-1
+        )
         
-        # Update cache
-        self._update_cache(k_values, actions)
+        # Aggregate memory output
+        memory_output = (new_stack * gate_weights.unsqueeze(-1)).sum(dim=3)  # [batch, 1, num_heads, stack_dim]
+        
+        # Apply decompression if enabled
+        if self.use_compression:
+            memory_output = self.up_proj(memory_output)  # Decompress from stack_dim to head_dim
+            
+        memory_output = memory_output.view(batch_size, 1, -1)  # [batch, 1, d_model]
+        
+        # Apply residual connection
+        output = memory_output.squeeze(1) * self.res_weight + hidden_state  # [batch, d_model]
+        
+        # Update cache with current values only
+        self._update_cache(current_k_values.detach(), current_actions.detach())
         
         return (
-            memory_output.squeeze(0) * self.res_weight + hidden_state,
-            new_stack.squeeze(0),
-            new_mask.squeeze(0)
+            output,                    # [batch, d_model]
+            new_stack.squeeze(1),      # [batch, num_heads, stack_slots, head_dim]
+            new_mask.squeeze(1)        # [batch, num_heads, stack_slots]
         )
