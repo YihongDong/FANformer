@@ -1,8 +1,10 @@
-# FANformer: Enhancing LLMs through Effective Periodicity Modeling
+# Reasoning is Periodicity? Improving Large Language Models Through Effective Periodicity Modeling
 
 [![arXiv](https://img.shields.io/badge/arXiv-2502.21309-b31b1b.svg)](https://arxiv.org/abs/2502.21309)
 
 This repository contains the implementation and pre-trained models for FANformer, a novel architecture that enhances Large Language Models through effective periodicity modeling.
+
+🎉 Our work has been accepted to NeurIPS'25.
 
 ## Overview
 - **Revised Architecture**: Implemented in `olmo/model.py`
