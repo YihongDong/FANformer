@@ -29,6 +29,9 @@ olmes --model ${MODEL_PATH} --task main_suite::olmo1 --output-dir ${OUTPUT_DIR}
 | FANformer-1B   | 1.1B       | 1T | [Huggingface](https://huggingface.co/dongyh/FANformer-1B) or [Google Drive](https://drive.google.com/drive/folders/1lwxxPskEwp5tA2CImITOhiaugGFEVJAs?usp=drive_link) |
 
 
+## Wandb report on comparison
+
+[![WandB](https://img.shields.io/badge/WandB-Report-orange.svg)](https://wandb.ai/dongyh/olmo-tiny/reports/FANformer-vs-OLMo--VmlldzoxNTM2MDMxNw)
 
 ## Citation
 ```bibtex
