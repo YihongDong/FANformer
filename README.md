@@ -31,7 +31,7 @@ olmes --model ${MODEL_PATH} --task main_suite::olmo1 --output-dir ${OUTPUT_DIR}
 
 ## Wandb report on comparison
 
-[![WandB](https://img.shields.io/badge/WandB-Report-orange.svg)](https://wandb.ai/dongyh/olmo-tiny/reports/FANformer-vs-OLMo--VmlldzoxNTM2MDMxNw)
+[![WandB](https://img.shields.io/badge/WandB-Report-orange.svg)](https://api.wandb.ai/links/dongyh/vh4jyqsx)
 
 ## Citation
 ```bibtex
