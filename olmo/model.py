@@ -1484,9 +1484,10 @@ class OLMo(nn.Module):
         # Initialize memory if stack memory is enabled and not provided
         if self.config.use_stack_memory:
             if memory_stack is None:
-                memory_stack = self.default_memory_stack.expand(batch_size, -1, -1, -1, -1).clone()
+                # Expand to batch size and truncate to actual seq_len
+                memory_stack = self.default_memory_stack.expand(batch_size, -1, -1, -1, -1)[:, :seq_len].clone()
             if memory_mask is None:
-                memory_mask = self.default_memory_mask.expand(batch_size, -1, -1, -1).clone()
+                memory_mask = self.default_memory_mask.expand(batch_size, -1, -1, -1)[:, :seq_len].clone()
 
         # Transform the attention mask into what the blocks expect.
         if attention_mask is not None:
