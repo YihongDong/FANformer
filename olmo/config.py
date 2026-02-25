@@ -193,6 +193,11 @@ class ActivationType(StrEnum):
 class BlockType(StrEnum):
     sequential = "sequential"
 
+    fanformer = "fanformer"
+    """
+    FANformer block: removes W_v, uses a separate FANLayer for v while q/k share another FANLayer.
+    """
+
     llama = "llama"
     """
     A block similar to the sequential block with slightly different

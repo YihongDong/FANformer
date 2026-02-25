@@ -67,6 +67,7 @@ __all__ = [
     "SwiGLU",
     "OLMoBlock",
     "OLMoSequentialBlock",
+    "FANformerSequentialBlock",
     "OLMo",
     "OLMoOutput",
     "OLMoGenerateOutput",
@@ -731,6 +732,8 @@ class OLMoBlock(nn.Module):
     def build(cls, layer_id: int, config: ModelConfig, cache: BufferCache) -> OLMoBlock:
         if config.block_type == BlockType.sequential:
             return OLMoSequentialBlock(layer_id, config, cache)
+        elif config.block_type == BlockType.fanformer:
+            return FANformerSequentialBlock(layer_id, config, cache)
         elif config.block_type == BlockType.llama:
             return OLMoLlamaBlock(layer_id, config, cache)
         else:
@@ -895,6 +898,155 @@ class OLMoSequentialBlock(OLMoBlock):
         x = og_x + x
 
         return x, cache
+
+class FANformerSequentialBlock(OLMoBlock):
+    """
+    A variant of OLMoSequentialBlock that removes W_v and uses a separate FANLayer for v.
+    q and k share one FANLayer (via FAN module), while v only goes through its own FANLayer
+    (no linear projection).
+    """
+
+    def __init__(self, layer_id: int, config: ModelConfig, cache: BufferCache):
+        super().__init__(layer_id, config, cache)
+
+        head_dim = config.d_model // config.n_heads
+        v_dim = config.effective_n_kv_heads * head_dim
+
+        # fused_dims for q and k only (no v)
+        self.fused_dims = (
+            config.d_model,
+            config.effective_n_kv_heads * head_dim,
+        )
+
+        # QK projection via FAN (shared FANLayer + linear)
+        self.att_proj = FAN(config.d_model, sum(self.fused_dims), config, activation=config.attention_activation)
+
+        # V projection via a separate FANLayer only (no linear W_v)
+        self.v_fan = FANLayer(config.d_model, v_dim, config.p_ratio, activation=None)
+
+        # Feed-forward input projection.
+        self.ff_proj = nn.Linear(
+            config.d_model, self.hidden_size, bias=config.include_bias, device=config.init_device
+        )
+
+        # Layer norms.
+        self.attn_norm = LayerNorm.build(config, size=config.d_model)
+        self.ff_norm = LayerNorm.build(config, size=config.d_model)
+
+    def reset_parameters(self):
+        super().reset_parameters()
+        self.attn_norm.reset_parameters()
+        self.ff_norm.reset_parameters()
+
+        if self.config.init_fn == InitFnType.normal:
+            std = self.config.init_std
+            cutoff_factor = self.config.init_cutoff_factor
+        elif self.config.init_fn == InitFnType.mitchell:
+            std = 1 / math.sqrt(self.config.d_model)
+            cutoff_factor = self.config.init_cutoff_factor or 3.0
+        elif self.config.init_fn == InitFnType.full_megatron:
+            std = self.config.init_std
+            cutoff_factor = self.config.init_cutoff_factor or 3.0
+        else:
+            raise NotImplementedError(self.config.init_fn)
+
+        init_normal(self.att_proj.fanlayer.input_linear, std, cutoff_factor)
+        init_normal(self.att_proj.linear, std, cutoff_factor)
+        init_normal(self.v_fan.input_linear, std, cutoff_factor)
+        init_normal(self.ff_proj, std, cutoff_factor)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        attention_bias: Optional[torch.Tensor] = None,
+        layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False,
+        max_doc_len: Optional[int] = None,
+        cu_doc_lens: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
+        # apply norm before
+        if not self.config.norm_after:
+            if self._activation_checkpoint_fn is not None:
+                h = self._activation_checkpoint_fn(self.attn_norm, x)
+            else:
+                h = self.attn_norm(x)
+        else:
+            h = x
+
+        # QK from shared FAN, V from separate FANLayer
+        qk = self.att_proj(h)
+        v = self.v_fan(h)
+
+        if self.config.clip_qkv is not None:
+            qk.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
+            v.clamp_(min=-self.config.clip_qkv, max=self.config.clip_qkv)
+
+        q, k = qk.split(self.fused_dims, dim=-1)
+
+        # Get attention scores.
+        if self._activation_checkpoint_fn is not None:
+            att, cache = self._activation_checkpoint_fn(
+                self.attention,
+                q,
+                k,
+                v,
+                attention_bias,
+                layer_past=layer_past,
+                use_cache=use_cache,
+                max_doc_len=max_doc_len,
+                cu_doc_lens=cu_doc_lens,
+            )
+        else:
+            att, cache = self.attention(
+                q,
+                k,
+                v,
+                attention_bias,
+                layer_past=layer_past,
+                use_cache=use_cache,
+                max_doc_len=max_doc_len,
+                cu_doc_lens=cu_doc_lens,
+            )
+
+        if self.config.norm_after:
+            if self._activation_checkpoint_fn is not None:
+                att = self._activation_checkpoint_fn(self.attn_norm, att)
+            else:
+                att = self.attn_norm(att)
+
+        # Add attention scores.
+        # shape: (B, T, C)
+        x = x + self.dropout(att)
+
+        # Add feed-forward projection.
+        # shape: (batch_size, seq_len, d_model)
+        og_x = x
+
+        if not self.config.norm_after:
+            if self._activation_checkpoint_fn is not None:
+                x = self._activation_checkpoint_fn(self.ff_norm, x)
+            else:
+                x = self.ff_norm(x)
+
+        x = self.ff_proj(x)
+
+        if self._activation_checkpoint_fn is not None:
+            x = self._activation_checkpoint_fn(self.act, x)
+        else:
+            x = self.act(x)
+        x = self.ff_out(x)
+
+        if self.config.norm_after:
+            if self._activation_checkpoint_fn is not None:
+                x = self._activation_checkpoint_fn(self.ff_norm, x)
+            else:
+                x = self.ff_norm(x)
+
+        x = self.dropout(x)
+        x = og_x + x
+
+        return x, cache
+
 
 class OLMoOutput(NamedTuple):
     logits: torch.FloatTensor
