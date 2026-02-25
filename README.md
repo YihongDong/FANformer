@@ -18,7 +18,7 @@ torchrun --nproc_per_node=8 scripts/train.py configs/test/FANformer-1B-pretrain.
 
 #### Tips
 
-We are training 10B+ FANformer models and have achieved promising results. During training we encountered a few subtle issues related to distributed training frameworks and specific model configurations. We share them here:
+We are training an LLM with 10B+ parameters based on FANformer and have achieved promising results. During training, we encountered a few subtle issues related to distributed training frameworks and specific model configurations. We share some tips here:
 
 1) **Explicit `input_layernorm` when using Megatron**. When using Megatron for distributed training, Megatron's Transformer calls a fused `column_parallel + layernorm` CUDA kernel from Transformer Engine, which merges the `input_layernorm` (outside the Attention block) with the QKV matrix multiplication into a single low-level operator. FanLayer does **not** use this fused kernel — it uses `column_parallel` for two separate matrix multiplications — and as a result, `input_layernorm` was silently missing. Since FANformer applies a FanLayer *after* `input_layernorm` (and therefore cannot use the standard fused kernel), `input_layernorm` must be applied **explicitly** before the FAN computation.
 
