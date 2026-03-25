@@ -481,7 +481,7 @@ class ModelConfig(BaseConfig):
     
     use_ATF: Optional[bool] = False
     
-    p_ratio: float = 0.25
+    p_ratio: float = 0.125
     
     
     attention_activation: Optional[str] = None
